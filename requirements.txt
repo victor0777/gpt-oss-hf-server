@@ -11,6 +11,10 @@ numpy>=1.24.0
 psutil>=5.9.0
 bitsandbytes>=0.40.0
 
+# Inference engines (optional)
+vllm>=0.5.0  # For vLLM engine support
+# tensorrt-llm>=0.10.0  # For TensorRT-LLM (requires separate installation)
+
 # Optional but recommended
 flashinfer  # For optimized attention
 triton>=2.0.0  # For Triton kernels
@@ -23,5 +27,6 @@ opentelemetry-exporter-otlp>=1.18.0
 # Development tools
 pytest>=7.3.0
 requests>=2.31.0
+aiohttp>=3.8.0  # For async HTTP client
 black>=23.0.0
 pylint>=2.17.0

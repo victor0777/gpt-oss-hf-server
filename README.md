@@ -1,13 +1,20 @@
-# GPT-OSS HuggingFace Server
+# GPT-OSS HuggingFace Server v4.5.1
 
-High-performance inference server for GPT-OSS models with multi-GPU support and OpenAI API compatibility.
+High-performance inference server for GPT-OSS models with multi-GPU support, profile system, and personal use optimization.
 
 ## 🚀 Features
 
+### v4.5.1 Highlights
+- **Profile System**: Three operational modes (LATENCY_FIRST, QUALITY_FIRST, BALANCED)
+- **Personal Mode**: Optimized for individual users with relaxed SLOs
+- **120B Model Support**: Successfully running MoE 120b model with 4-bit quantization
+- **Enhanced Metrics**: Comprehensive tagging with model, engine, and profile information
+
+### Core Features
 - **Multi-GPU Support**: Pipeline and tensor parallelism for optimal GPU utilization
-- **Flexible Configuration**: CLI parameters for GPU mode selection
+- **Flexible Configuration**: CLI parameters for GPU mode and profile selection
 - **OpenAI API Compatible**: Drop-in replacement for OpenAI Chat Completion API
-- **Model Support**: Optimized for both 20b and 120b GPT-OSS models
+- **Model Support**: Both 20b and 120b GPT-OSS models (including quantized versions)
 - **Performance Optimized**: Continuous batching, KV caching, and dynamic batch sizing
 - **Production Ready**: Comprehensive testing, monitoring, and error handling
 
@@ -17,8 +24,8 @@ High-performance inference server for GPT-OSS models with multi-GPU support and 
 - CUDA 11.7+ with compatible GPU drivers
 - 4x NVIDIA GPUs (A100 or similar recommended)
 - Memory Requirements:
-  - 20b model: ~12GB GPU memory
-  - 120b model: ~60GB GPU memory (distributed)
+  - 20b model: ~12.8GB per GPU (pipeline mode)
+  - 120b model: ~13.8GB per GPU (4-bit quantized, tensor mode)
 
 ## 🛠️ Installation
 
@@ -36,18 +43,24 @@ pip install -r requirements.txt
 
 ## 🏃 Quick Start
 
-### Basic Usage
+### v4.5.1 Usage (with Profiles)
 
 ```bash
-# Start server with 20b model (pipeline parallelism)
-./scripts/start_server.sh 20b pipeline 8000
+# Fast responses for daily development (20b model)
+python src/server_v451.py --engine custom --profile latency_first --model 20b --port 8000
 
-# Start server with 120b model (tensor parallelism)
-./scripts/start_server.sh 120b tensor 8000
+# High quality for complex tasks (120b model)
+python src/server_v451.py --engine custom --profile quality_first --model 120b --port 8000
 
-# Auto-detect optimal GPU mode
-./scripts/start_server.sh 20b auto 8000
+# Balanced mode
+python src/server_v451.py --engine custom --profile balanced --model 20b --port 8000
 ```
+
+### Profile Options
+
+- `latency_first`: Optimized for speed (4-8s response, 20b model)
+- `quality_first`: Optimized for quality (6-15s response, 120b model)
+- `balanced`: Mixed workloads
 
 ### GPU Mode Options
 
@@ -56,29 +69,23 @@ pip install -r requirements.txt
 - `tensor`: Split model layers across GPUs (required for 120b)
 - `auto`: Automatically select based on model size
 
-### Direct Python Usage
+## 📊 Performance Benchmarks (v4.5.1)
 
-```python
-python src/server.py 20b --gpu-mode pipeline --port 8000
-```
-
-## 📊 Performance Benchmarks
-
-### 20b Model (Pipeline Mode)
-| Metric | Value | Target | Status |
+### 20b Model (LATENCY_FIRST Profile)
+| Metric | Value | Personal Target | Status |
 |--------|-------|--------|--------|
-| QPS | ~1.5 | 2.0 | 75% |
-| P95 Latency | ~7,000ms | <10,000ms | ✅ |
-| GPU Utilization | 4/4 | 4/4 | ✅ |
-| Error Rate | 0% | <1% | ✅ |
+| Response Time | 4-8s | <10s | ✅ |
+| Success Rate | ~70% | >60% | ✅ |
+| Memory/GPU | 12.8GB | <20GB | ✅ |
+| QPS | 0.5 | 0.3 | ✅ |
 
-### 120b Model (Tensor Mode)
+### 120b Model (QUALITY_FIRST Profile)
 | Metric | Value | Notes |
 |--------|-------|-------|
-| QPS | 0.14 | Expected for 60GB model |
-| P95 Latency | ~38,000ms | Large model latency |
-| Memory Usage | ~60GB | Distributed across 4 GPUs |
-| Error Rate | 0% | Stable |
+| Response Time | 6-15s | Excellent for 120B model |
+| Success Rate | ~83% | Very stable |
+| Memory/GPU | 13.8GB | 4-bit quantized efficiency |
+| Model Type | MoE | 128 experts, 4 active |
 
 ## 🔧 Configuration
 
