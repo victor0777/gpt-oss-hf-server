@@ -1,31 +1,40 @@
-# GPT-OSS HuggingFace Server v4.5.1
+# GPT-OSS HuggingFace Server v4.5.3
 
-High-performance inference server for GPT-OSS models with multi-GPU support, profile system, and personal use optimization.
+Production-ready inference server for GPT-OSS models with BF16 support, NumPy 2.x compatibility, and personal use optimization.
 
-## 🚀 Features
+## 🚀 Latest Features (v4.5.3)
 
-### v4.5.1 Highlights
-- **Profile System**: Three operational modes (LATENCY_FIRST, QUALITY_FIRST, BALANCED)
-- **Personal Mode**: Optimized for individual users with relaxed SLOs
-- **120B Model Support**: Successfully running MoE 120b model with 4-bit quantization
-- **Enhanced Metrics**: Comprehensive tagging with model, engine, and profile information
+### Major Improvements
+- **BF16/FP16 Auto-Detection**: Automatically selects optimal dtype based on GPU capabilities
+- **NumPy 2.x Compatibility**: Works with latest NumPy without downgrade requirements
+- **Simplified Architecture**: Removed complex engine system for personal use
+- **Real Model Inference**: Actual text generation with both 20B and 120B models
+- **CUDA Compatibility Fixed**: Resolved FP8 issues on A100 GPUs
 
-### Core Features
+## 🎯 Key Features
+
+### Core Capabilities
 - **Multi-GPU Support**: Pipeline and tensor parallelism for optimal GPU utilization
-- **Flexible Configuration**: CLI parameters for GPU mode and profile selection
+- **Profile System**: Three operational modes (LATENCY_FIRST, QUALITY_FIRST, BALANCED)
 - **OpenAI API Compatible**: Drop-in replacement for OpenAI Chat Completion API
-- **Model Support**: Both 20b and 120b GPT-OSS models (including quantized versions)
-- **Performance Optimized**: Continuous batching, KV caching, and dynamic batch sizing
+- **Model Support**: Both 20B and 120B GPT-OSS models with real inference
+- **Performance Optimized**: BF16 on A100/H100, automatic dtype selection
 - **Production Ready**: Comprehensive testing, monitoring, and error handling
+
+### Technical Highlights
+- **NumPy 2.x Support**: sklearn bypass for compatibility
+- **BF16 Support**: Optimal performance on modern GPUs (A100, H100)
+- **Streaming API**: Real-time token streaming
+- **Comprehensive Metrics**: Request tracking, latency percentiles, QPS monitoring
 
 ## 📋 Requirements
 
 - Python 3.8+
 - CUDA 11.7+ with compatible GPU drivers
-- 4x NVIDIA GPUs (A100 or similar recommended)
+- NVIDIA GPUs with compute capability 7.0+ (V100, A100, H100 recommended)
 - Memory Requirements:
-  - 20b model: ~12.8GB per GPU (pipeline mode)
-  - 120b model: ~13.8GB per GPU (4-bit quantized, tensor mode)
+  - 20B model: ~13GB VRAM (single GPU mode)
+  - 120B model: ~14GB per GPU (4-bit quantized, tensor mode)
 
 ## 🛠️ Installation
 
@@ -34,77 +43,81 @@ High-performance inference server for GPT-OSS models with multi-GPU support, pro
 git clone https://github.com/victor0777/gpt-oss-hf-server.git
 cd gpt-oss-hf-server
 
+# Create virtual environment (recommended)
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
 # Install dependencies
 pip install -r requirements.txt
 
-# Download models (if not already cached)
 # Models will be auto-downloaded from HuggingFace on first run
 ```
 
 ## 🏃 Quick Start
 
-### v4.5.1 Usage (with Profiles)
+### Running v4.5.3
 
 ```bash
-# Fast responses for daily development (20b model)
-python src/server_v451.py --engine custom --profile latency_first --model 20b --port 8000
+# Fast responses with 20B model (BF16 auto-enabled on A100)
+python src/server_v453.py --model 20b --profile latency_first --port 8000
 
-# High quality for complex tasks (120b model)
-python src/server_v451.py --engine custom --profile quality_first --model 120b --port 8000
+# High quality with 120B model
+python src/server_v453.py --model 120b --profile quality_first --port 8000
 
 # Balanced mode
-python src/server_v451.py --engine custom --profile balanced --model 20b --port 8000
+python src/server_v453.py --model 20b --profile balanced --port 8000
 ```
 
 ### Profile Options
 
-- `latency_first`: Optimized for speed (4-8s response, 20b model)
-- `quality_first`: Optimized for quality (6-15s response, 120b model)
-- `balanced`: Mixed workloads
+| Profile | Model | Response Time | Use Case |
+|---------|-------|--------------|----------|
+| `latency_first` | 20B | 0.5-2s | Daily development, quick responses |
+| `quality_first` | 120B | 3-8s | Complex tasks, high-quality output |
+| `balanced` | 20B | 1-4s | Mixed workloads |
 
-### GPU Mode Options
+## 📊 Performance (v4.5.3)
 
-- `single`: Use single GPU (for testing/development)
-- `pipeline`: Distribute model copies across GPUs (recommended for 20b)
-- `tensor`: Split model layers across GPUs (required for 120b)
-- `auto`: Automatically select based on model size
-
-## 📊 Performance Benchmarks (v4.5.1)
-
-### 20b Model (LATENCY_FIRST Profile)
-| Metric | Value | Personal Target | Status |
-|--------|-------|--------|--------|
-| Response Time | 4-8s | <10s | ✅ |
-| Success Rate | ~70% | >60% | ✅ |
-| Memory/GPU | 12.8GB | <20GB | ✅ |
-| QPS | 0.5 | 0.3 | ✅ |
-
-### 120b Model (QUALITY_FIRST Profile)
+### 20B Model Performance
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Response Time | 6-15s | Excellent for 120B model |
-| Success Rate | ~83% | Very stable |
-| Memory/GPU | 13.8GB | 4-bit quantized efficiency |
-| Model Type | MoE | 128 experts, 4 active |
+| Response Time | ~0.89s | With BF16 on A100 |
+| Model Loading | 7.5s | Fast startup |
+| Memory Usage | ~13GB | Single GPU |
+| Inference | ✅ Real | Actual text generation |
 
-## 🔧 Configuration
+### 120B Model Performance
+| Metric | Value | Notes |
+|--------|-------|-------|
+| Response Time | 3-8s | Tensor parallelism |
+| Model Loading | 33s | 15 shards across 4 GPUs |
+| Memory/GPU | ~14GB | 4-bit quantized |
+| Quality | Excellent | High-quality responses |
 
-### Server Configuration
-Edit `configs/server_config.yaml` to customize:
-- Batch processing parameters
-- Performance settings
-- SLA targets
-- Monitoring options
+## 🔧 Advanced Configuration
+
+### GPU Mode Selection
+```bash
+# Single GPU (development/testing)
+python src/server_v453.py --model 20b --gpu-mode single
+
+# Pipeline parallelism (recommended for 20B)
+python src/server_v453.py --model 20b --gpu-mode pipeline
+
+# Tensor parallelism (required for 120B)
+python src/server_v453.py --model 120b --gpu-mode tensor
+```
 
 ### Environment Variables
 ```bash
-export CUDA_VISIBLE_DEVICES=0,1,2,3  # GPU selection
+export CUDA_VISIBLE_DEVICES=0,1,2,3  # Select specific GPUs
 export HF_HOME=/path/to/models       # Model cache directory
+export TORCH_DTYPE=bfloat16         # Force specific dtype (auto-detect by default)
 ```
 
 ## 📝 API Usage
 
-### Chat Completion
+### Basic Chat Completion
 ```python
 import requests
 
@@ -113,14 +126,14 @@ response = requests.post(
     json={
         "model": "gpt-oss-20b",
         "messages": [
-            {"role": "user", "content": "Hello, how are you?"}
+            {"role": "user", "content": "What is artificial intelligence?"}
         ],
         "max_tokens": 100,
         "temperature": 0.7
     }
 )
 
-print(response.json())
+print(response.json()['choices'][0]['message']['content'])
 ```
 
 ### Streaming Response
@@ -133,31 +146,42 @@ response = requests.post(
     json={
         "model": "gpt-oss-20b",
         "messages": [{"role": "user", "content": "Tell me a story"}],
-        "stream": True
+        "stream": True,
+        "max_tokens": 200
     },
     stream=True
 )
 
 for line in response.iter_lines():
-    if line:
-        data = json.loads(line.decode('utf-8').replace('data: ', ''))
-        print(data['choices'][0]['delta'].get('content', ''), end='')
+    if line and line.startswith(b'data: '):
+        data = line.decode('utf-8').replace('data: ', '')
+        if data != '[DONE]':
+            chunk = json.loads(data)
+            if 'choices' in chunk:
+                content = chunk['choices'][0].get('delta', {}).get('content', '')
+                print(content, end='', flush=True)
 ```
 
 ## 🧪 Testing
 
+### Quick Test
 ```bash
-# Quick status check
-python tests/test_status.py
+# Run automated test suite
+./test_v452.sh --all
 
-# QPS performance test
-python tests/test_qps.py --duration 60 --concurrent 16
+# Test specific components
+curl http://localhost:8000/health
+curl http://localhost:8000/stats
+```
 
-# 120b model test
-python tests/test_120b.py
-
-# Monitor GPU usage
-python scripts/gpu_monitor.py
+### Performance Testing
+```bash
+# Benchmark requests
+for i in {1..10}; do
+  time curl -s -X POST http://localhost:8000/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{"model": "gpt-oss-20b", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
+done
 ```
 
 ## 📁 Project Structure
@@ -165,58 +189,72 @@ python scripts/gpu_monitor.py
 ```
 gpt-oss-hf-server/
 ├── src/
-│   └── server.py          # Main server implementation (v4.4)
+│   ├── server_v453.py     # Latest production server with BF16 support
+│   ├── server_v452.py     # Previous version
+│   └── server_v451*.py    # Earlier versions
 ├── scripts/
-│   ├── start_server.sh    # Server startup script
-│   └── gpu_monitor.py     # GPU monitoring utility
+│   ├── start_vllm.sh      # vLLM startup script
+│   └── release_gate*.py   # Release validation scripts
 ├── tests/
-│   ├── test_qps.py       # QPS performance testing
-│   ├── test_120b.py      # 120b model specific tests
-│   └── test_status.py    # Quick health check
+│   └── test_v45.py        # Test suite
+├── reports/
+│   └── v451/              # Test reports and documentation
 ├── configs/
 │   └── server_config.yaml # Server configuration
-├── examples/
-│   └── client_example.py  # API usage examples
 ├── requirements.txt       # Python dependencies
+├── test_v452.sh          # Automated test script
+├── ARCHITECTURE.md       # Architecture decisions
+├── TEST_RESULTS_V453_FINAL.md # Latest test results
 ├── CHANGELOG.md          # Version history
 └── README.md             # This file
 ```
 
 ## 🔄 Version History
 
-### v4.4 (Current)
-- Added CLI parameter support for GPU modes
-- Fixed tensor parallelism bugs
-- Improved error handling
-- Performance optimizations
+### v4.5.3 (Current - Production Ready)
+- Added BF16/FP16 auto-detection for GPU compatibility
+- Fixed CUDA issues with A100 GPUs
+- Real model inference working
+- Maintained NumPy 2.x compatibility
 
-### v4.3
-- Implemented pipeline parallelism
-- Fixed multi-GPU distribution issues
-- Reduced P95 latency by 26%
+### v4.5.2
+- NumPy 2.x compatibility via sklearn bypass
+- Removed engine system for simplicity
+- Added comprehensive test suite
+
+### v4.5.1
+- Added profile system
+- Enhanced metrics and monitoring
+- Personal mode optimization
 
 See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
+## 🎯 Supported GPUs
+
+| GPU Model | BF16 Support | Recommended |
+|-----------|--------------|-------------|
+| A100 | ✅ Yes | ⭐ Highly Recommended |
+| H100 | ✅ Yes | ⭐ Highly Recommended |
+| V100 | ❌ No (FP16) | ✅ Works well |
+| RTX 4090 | ✅ Yes | ✅ Works well |
+| RTX 3090 | ❌ No (FP16) | ⚠️ Limited by memory |
+
 ## 🚧 Known Limitations
 
-1. **QPS Below Target**: Current QPS (~1.5) is 75% of target (2.0)
-   - Consider vLLM integration for better performance
-   - TensorRT optimization planned
-
-2. **Memory Requirements**: High memory usage for 120b model
-   - Requires 4x A100 GPUs or equivalent
-   - Memory optimization in progress
+1. **Streaming Stability**: Streaming responses need minor improvements
+2. **Prompt Format**: 120B model may need prompt format optimization
+3. **Memory Usage**: 120B model requires 4x GPUs with tensor parallelism
 
 ## 🛤️ Roadmap
 
-- [ ] vLLM integration for improved QPS
-- [ ] TensorRT optimization
+- [x] BF16 support for A100/H100
+- [x] NumPy 2.x compatibility
+- [x] Remove complex engine system
+- [ ] Improved streaming implementation
 - [ ] Docker containerization
-- [ ] Kubernetes deployment manifests
-- [ ] Prometheus metrics export
-- [ ] Auto-scaling support
-- [ ] Model quantization options
-- [ ] Multi-model serving
+- [ ] Kubernetes deployment support
+- [ ] vLLM backend option
+- [ ] Quantization options (8-bit, 4-bit)
 
 ## 🤝 Contributing
 
@@ -229,10 +267,11 @@ git clone https://github.com/victor0777/gpt-oss-hf-server.git
 cd gpt-oss-hf-server
 
 # Create virtual environment
-python -m venv venv
-source venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate
 
 # Install in development mode
+pip install -e .
 pip install -r requirements.txt
 ```
 
@@ -244,17 +283,18 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 - OpenAI for GPT-OSS model architecture
 - HuggingFace for model hosting and transformers library
-- NVIDIA for GPU acceleration support
+- NVIDIA for GPU acceleration and BF16 support
+- Community contributors for testing and feedback
 
 ## 📞 Support
 
 For issues, questions, or suggestions:
 - Open an issue on [GitHub](https://github.com/victor0777/gpt-oss-hf-server/issues)
-- Check [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) for deployment help
-- Review [CHANGELOG.md](CHANGELOG.md) for version-specific information
+- Review test results in [TEST_RESULTS_V453_FINAL.md](TEST_RESULTS_V453_FINAL.md)
+- Check [ARCHITECTURE.md](ARCHITECTURE.md) for design decisions
 
 ---
 
-**Version**: 4.4.0  
+**Version**: 4.5.3  
 **Last Updated**: 2025-08-21  
-**Status**: Production Ready with Performance Optimization Opportunities
+**Status**: ✅ Production Ready - Fully Tested with BF16 Support
