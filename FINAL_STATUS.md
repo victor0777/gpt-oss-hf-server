@@ -65,10 +65,6 @@
 3. **Monitoring**: Prometheus/Grafana integration
 4. **API Gateway**: Rate limiting and authentication
 
-## 📁 Repository Ready at:
-```
-/home/ktl/gpt-oss-hf-server/
-```
 
 All files are prepared, documented, and ready for push. The repository includes:
 - Production server code (v4.4)
