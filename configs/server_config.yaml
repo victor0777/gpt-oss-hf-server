@@ -1,0 +1,67 @@
+# GPT-OSS HuggingFace Server Configuration
+
+# Model settings
+model:
+  name: "openai/gpt-oss-20b"  # or "openai/gpt-oss-120b"
+  size: "20b"  # or "120b"
+  dtype: "bfloat16"
+
+# GPU configuration
+gpu:
+  mode: "auto"  # Options: single, pipeline, tensor, auto
+  visible_devices: "0,1,2,3"
+  memory_fraction: 0.95
+
+# Batch processing
+batch:
+  # For 20b model
+  20b:
+    max_size: 64
+    prefill_max_tokens: 262144
+    decode_max_tokens: 65536
+    prefill_window_ms: 5
+    decode_window_ms: 2
+  
+  # For 120b model
+  120b:
+    max_size: 8
+    prefill_max_tokens: 32768
+    decode_max_tokens: 8192
+    prefill_window_ms: 8
+    decode_window_ms: 4
+
+# Performance settings
+performance:
+  max_concurrent_requests: 128
+  enable_continuous_batching: true
+  num_batch_processors: 8
+  use_kv_cache: true
+  target_queue_length: 16
+
+# SLA targets
+sla:
+  target_qps: 2.0
+  target_ttft_ms: 5000
+  target_e2e_ms: 15000
+  target_p95_latency_ms: 7000
+
+# Monitoring
+monitoring:
+  health_check_interval_s: 10
+  health_window_size: 100
+  enable_opentelemetry: false
+  otlp_endpoint: "localhost:4317"
+
+# Server settings
+server:
+  host: "0.0.0.0"
+  port: 8000
+  log_level: "INFO"
+  cors_enabled: true
+  cors_origins: ["*"]
+
+# Cache settings
+cache:
+  max_entries: 10000
+  ttl_seconds: 3600
+  enable_prefix_cache: true
