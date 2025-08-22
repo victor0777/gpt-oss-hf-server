@@ -1,18 +1,26 @@
-# GPT-OSS HuggingFace Server v4.6.0
+# GPT-OSS HuggingFace Server v4.7.0
 
 Production-ready inference server for GPT-OSS models with enterprise-grade features and optimizations.
 
-## 🚀 Latest Features (v4.6.0)
+## 🚀 Latest Features (v4.7.0)
 
-### P0.5 Performance & Reliability Improvements
+### NEW: GPU Routing & Multi-GPU Intelligence
+- **PR-MG01: Large-Path Auto Routing**: Intelligent GPU routing for large requests
+  - Automatic detection of requests needing multi-GPU (>8000 tokens or >6000MB KV cache)
+  - NCCL optimization for multi-GPU communication
+  - Real-time routing statistics and GPU balance monitoring
+  - Works seamlessly with existing HuggingFace device_map mechanism
+
+### v4.6.0 Performance & Reliability Improvements
 - **PR-PF01: Enhanced Prompt Normalization**: Byte-identical prompts with comprehensive content normalization
 - **PR-CACHE02: Optimized Cache Hit Rate**: Achieved ≥70% hit rate with smart eviction policies
 - **PR-SESSION02: Aggressive Session Management**: 180s idle timeout, 30s cleanup interval, VRAM optimization
 - **PR-OBS01: Complete Observability**: All metrics include model labels and session tracking
 
 ### Core Improvements
+- **GPU Router**: Intelligent routing decisions with configurable thresholds
 - **Memory Management**: Pre-admission estimation, session-based KV cache, dynamic degradation
-- **Enhanced Testing**: Complete P0 test suite with 100% pass rate on both 20b and 120b models
+- **Enhanced Testing**: Complete P0 test suite with GPU routing validation
 - **Model Support**: Fixed 120b model selection and profile overrides
 - **Performance**: Optimized for both latency-first and quality-first profiles
 
@@ -82,6 +90,18 @@ python src/server.py --model 20b --profile latency_first --port 8000 --force-por
 |---------|-------|--------------|----------|
 | `latency_first` | 20B | 0.5-2s | Daily development, quick responses |
 | `quality_first` | 120B | 3-8s | Complex tasks, high-quality output |
+
+### GPU Routing Configuration (v4.7.0)
+
+```bash
+# Enable multi-GPU mode for large requests
+python src/server.py --model 120b --gpu-mode auto
+
+# Monitor GPU routing statistics
+curl http://localhost:8000/stats | jq '.gpu_routing'
+```
+
+The server automatically routes large requests (>8000 tokens) to multi-GPU configuration when available.
 
 ## 🧪 Testing
 

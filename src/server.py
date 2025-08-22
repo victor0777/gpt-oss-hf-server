@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-GPT-OSS HuggingFace Server v4.6.0
+GPT-OSS HuggingFace Server v4.7.0
 - P0 improvements: PromptBuilder, SSE stabilization, model tagging
 - BF16 tensor type for A100 compatibility
 - NumPy 2.x compatible (sklearn bypass)
@@ -84,6 +84,7 @@ import uvicorn
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from prompt_builder import PromptBuilder, PromptConfig, GenerationParams, PromptVersion
 from memory_guard import MemoryGuard, MemoryConfig, AdmissionController
+from gpu_router import GPURouter, RoutingConfig, RoutingMode
 
 # ================== Configuration ==================
 
@@ -170,11 +171,13 @@ class ModelManager:
         self.model = None
         self.tokenizer = None
         self.device_map = None
+        self.gpu_mode = config.gpu_mode  # Track GPU mode for routing decisions
         self.prompt_builder = None
         self.torch_dtype = self._determine_torch_dtype()
         self.model_metadata = {}
         self.memory_guard = None
         self.admission_controller = None
+        self.gpu_router = None  # PR-MG01: GPU Router for large requests
         self._initialize()
     
     def __del__(self):
@@ -292,6 +295,15 @@ class ModelManager:
             self.memory_guard = MemoryGuard(memory_config, model_config)
             self.admission_controller = AdmissionController(self.memory_guard)
             logger.info("✅ Memory management initialized")
+            
+            # Initialize GPU Router for PR-MG01
+            routing_config = RoutingConfig(
+                large_input_tokens=8000,
+                large_kv_mb=6000,
+                micro_batches=6
+            )
+            self.gpu_router = GPURouter(routing_config)
+            logger.info("✅ GPU Router initialized for 4-GPU auto-routing")
             
             load_time = time.time() - start_time
             logger.info(f"✅ Model loaded in {load_time:.1f}s")
@@ -506,6 +518,8 @@ class ServerStats:
         self.e2e_history = []
         self.model_metrics = {}  # Per-model metrics
         self.prompt_builder_metrics = {}
+        self.admission_action = None  # PR-MG01: Track routing decisions
+        self.routing_stats = {"accept": 0, "route4": 0, "reject": 0}  # PR-MG01
         self.lock = Lock()
     
     def record_request_start(self, model_id: str, model_size: str, prompt_version: str) -> float:
@@ -635,7 +649,7 @@ async def lifespan(app: FastAPI):
     """Lifecycle manager"""
     global model_manager
     
-    logger.info("🚀 Server v4.6.0 starting...")
+    logger.info("🚀 Server v4.7.0 starting...")
     logger.info(f"NumPy version: {np.__version__}")
     logger.info(f"PyTorch version: {torch.__version__}")
     logger.info(f"Transformers available: {TRANSFORMERS_AVAILABLE}")
@@ -664,12 +678,12 @@ async def lifespan(app: FastAPI):
     
     yield
     
-    logger.info("🛑 Server v4.6.0 shutting down...")
+    logger.info("🛑 Server v4.7.0 shutting down...")
 
 # Create FastAPI app
 app = FastAPI(
     title="GPT-OSS HuggingFace Server P0",
-    version="4.6.0",
+    version="4.7.0",
     lifespan=lifespan
 )
 
@@ -705,7 +719,7 @@ async def health():
     return {
         "status": "healthy" if health_score > 0.5 else "degraded",
         "health_score": health_score,
-        "version": "4.6.0",
+        "version": "4.7.0",
         "model": model_manager.model_metadata if model_manager else {},
         "dtype": str(model_manager.torch_dtype) if model_manager else "unknown",
         "profile": config.profile.value,
@@ -730,6 +744,10 @@ async def get_stats():
     # Add model metadata
     if model_manager:
         global_stats["model_info"] = model_manager.model_metadata
+        
+        # Add GPU routing statistics (PR-MG01)
+        if model_manager.gpu_router:
+            global_stats["gpu_routing"] = model_manager.gpu_router.get_stats()
     
     return global_stats
 
@@ -815,15 +833,47 @@ async def chat_completion(request: ChatCompletionRequest, req: Request):
                 detail=f"Request rejected: {admission_result['reason']}. Please reduce input size or retry later."
             )
         
-        # Apply degradation or routing if needed
-        if admission_result.get('route_to') == '4gpu':
-            # PR-MG01: Route to 4-GPU setup (placeholder for future implementation)
-            logger.info(f"Request {request_id} should be routed to 4-GPU setup")
-            # For now, just reject large requests until 4-GPU routing is implemented
-            raise HTTPException(
-                status_code=503,
-                detail="Large request detected. 4-GPU routing not yet implemented. Please reduce input size."
+        # PR-MG01: Check for 4-GPU routing
+        gpu_routing_decision = None
+        if model_manager.gpu_router:
+            # Get current memory pressure
+            current_memory_pressure = model_manager.memory_guard._get_gpu_memory_usage()
+            
+            # Make routing decision
+            # Get current GPU mode from model configuration
+            current_gpu_mode = "single"  # Default
+            if hasattr(model_manager, 'gpu_mode'):
+                current_gpu_mode = model_manager.gpu_mode
+            elif hasattr(model_manager.model, 'hf_device_map'):
+                # Model has device_map, likely in auto mode
+                current_gpu_mode = "auto"
+            
+            gpu_routing_decision = model_manager.gpu_router.should_route_to_multi_gpu(
+                input_tokens=input_tokens,  # Already computed above
+                max_new_tokens=request.max_tokens,
+                current_memory_pressure=current_memory_pressure,
+                current_gpu_mode=current_gpu_mode
             )
+            
+            # Log routing decision in stats
+            stats.admission_action = gpu_routing_decision.admission_action
+            if gpu_routing_decision.admission_action in stats.routing_stats:
+                stats.routing_stats[gpu_routing_decision.admission_action] += 1
+            
+            if gpu_routing_decision.should_use_multi_gpu:
+                logger.info(f"Request {request_id} should use multi-GPU: {gpu_routing_decision.reason}")
+                
+                # Check current GPU configuration
+                if gpu_routing_decision.mode == RoutingMode.AUTO:
+                    # Model is already distributed, just log the routing
+                    logger.info(f"Model already in multi-GPU mode: {current_gpu_mode}")
+                    model_metadata["gpu_mode"] = current_gpu_mode
+                    model_metadata["gpu_config"] = gpu_routing_decision.gpu_config
+                else:
+                    # Model is in single GPU mode but should use multi-GPU
+                    logger.warning(gpu_routing_decision.reason)
+                    model_metadata["gpu_mode"] = "single"
+                    model_metadata["gpu_recommendation"] = "Use --gpu-mode auto or tensor for multi-GPU"
         
         # Apply degraded parameters if needed
         if admission_result.get('degraded'):
@@ -1104,7 +1154,7 @@ async def metrics():
 # ================== Main ==================
 
 def main():
-    parser = argparse.ArgumentParser(description="GPT-OSS HF Server v4.6.0")
+    parser = argparse.ArgumentParser(description="GPT-OSS HF Server v4.7.0")
     parser.add_argument("--model", type=str, choices=["20b", "120b"], default="20b")
     parser.add_argument("--profile", type=str, choices=["latency_first", "quality_first"], 
                        default="latency_first")

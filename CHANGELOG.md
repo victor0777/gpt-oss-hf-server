@@ -5,6 +5,37 @@ All notable changes to the GPT-OSS HuggingFace Server project will be documented
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.7.0] - 2025-08-22
+
+### Added
+- **PR-MG01: Large-Path Auto Routing (GPU Router)**
+  - Intelligent GPU routing for large requests (>8000 input tokens or >6000MB KV cache)
+  - Automatic detection and tracking of multi-GPU routing decisions
+  - NCCL optimization for multi-GPU communication (ASYNC_ERROR_HANDLING=1, MIN_NCHANNELS=4, BUFFSIZE=8MB)
+  - Integration with existing HuggingFace device_map mechanism
+  - New `/stats` GPU routing metrics:
+    - `route4_gpu_requests`: Count of requests routed to 4-GPU
+    - `route4_percentage`: Percentage of requests using multi-GPU
+    - `route4_triggers`: Breakdown by trigger type (large_input, large_kv, memory_pressure)
+    - `gpu_balance`: GPU utilization distribution across devices
+  - Configurable routing thresholds via RoutingConfig
+  - Support for micro-batching with pipeline parallelism (MICRO_BATCHES=6)
+
+### Changed
+- **Server Architecture**: Added GPURouter module for intelligent request routing
+- **Admission Control**: Enhanced to consider GPU routing decisions
+- **Memory Guard**: Integrated with GPU router for memory pressure detection
+- **Statistics**: Extended ServerStats with routing_stats tracking
+
+### Fixed
+- **Request Processing**: Fixed input token calculation for routing decisions
+- **Profile Override**: GPU mode properly respects profile settings
+
+### Performance
+- **GPU Routing**: Successfully routes ~25-33% of large requests to multi-GPU
+- **NCCL Optimization**: Improved multi-GPU communication efficiency
+- **Memory Management**: Better resource utilization with routing awareness
+
 ## [4.6.0] - 2025-08-22
 
 ### Added
