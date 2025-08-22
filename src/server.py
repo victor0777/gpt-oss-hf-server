@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-GPT-OSS HuggingFace Server v4.5.4-P0
+GPT-OSS HuggingFace Server v4.6.0
 - P0 improvements: PromptBuilder, SSE stabilization, model tagging
 - BF16 tensor type for A100 compatibility
 - NumPy 2.x compatible (sklearn bypass)
@@ -83,6 +83,7 @@ import uvicorn
 # Import our PromptBuilder
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from prompt_builder import PromptBuilder, PromptConfig, GenerationParams, PromptVersion
+from memory_guard import MemoryGuard, MemoryConfig, AdmissionController
 
 # ================== Configuration ==================
 
@@ -162,7 +163,7 @@ class ServerConfig:
 # ================== Model Manager ==================
 
 class ModelManager:
-    """Model manager with P0 improvements"""
+    """Model manager with P0 improvements and memory management"""
     
     def __init__(self, config: ServerConfig):
         self.config = config
@@ -172,7 +173,21 @@ class ModelManager:
         self.prompt_builder = None
         self.torch_dtype = self._determine_torch_dtype()
         self.model_metadata = {}
+        self.memory_guard = None
+        self.admission_controller = None
         self._initialize()
+    
+    def __del__(self):
+        """Cleanup resources on deletion"""
+        try:
+            if self.model is not None:
+                del self.model
+                self.model = None
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+        except:
+            pass
     
     def _determine_torch_dtype(self):
         """Determine optimal torch dtype based on GPU"""
@@ -220,6 +235,11 @@ class ModelManager:
                 self.device_map = {"": 0}
                 logger.info("Using single GPU")
             
+            # Clear GPU cache before loading
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+            
             # Load model with explicit dtype and memory optimization
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.config.model_name,
@@ -227,7 +247,7 @@ class ModelManager:
                 torch_dtype=self.torch_dtype,
                 trust_remote_code=True,
                 low_cpu_mem_usage=True,
-                max_memory={0: "70GiB", 1: "70GiB", 2: "70GiB", 3: "70GiB"}  # Leave some headroom
+                max_memory={0: "75GiB", 1: "75GiB", 2: "75GiB", 3: "75GiB"}  # Adjusted for actual usage
             )
             
             # Store model metadata for tagging
@@ -238,6 +258,40 @@ class ModelManager:
                 "gpu_mode": self.config.gpu_mode,
                 "prompt_version": self.config.prompt_version.value
             }
+            
+            # Initialize memory management after model loading
+            memory_config = MemoryConfig(
+                gpu_memory_threshold=0.85,
+                mem_safety_reserve_mb=2048,
+                session_kv_limit_mb=512,
+                max_kv_gb=20.0,
+                idle_timeout_seconds=180,  # PR-SESSION02: Reduced from 300 to 180
+                large_req_tokens=8000,
+                large_req_kv_mb=6000
+            )
+            
+            # Get model config for memory calculations
+            if hasattr(self.model, 'config'):
+                model_config = {
+                    'num_hidden_layers': self.model.config.num_hidden_layers,
+                    'num_attention_heads': self.model.config.num_attention_heads,
+                    'num_key_value_heads': getattr(self.model.config, 'num_key_value_heads', self.model.config.num_attention_heads),
+                    'hidden_size': self.model.config.hidden_size,
+                    'torch_dtype': str(self.torch_dtype)
+                }
+            else:
+                # Default values for GPT-OSS models
+                model_config = {
+                    'num_hidden_layers': 48 if '20b' in self.config.model_size else 80,
+                    'num_attention_heads': 64 if '20b' in self.config.model_size else 96,
+                    'num_key_value_heads': 64 if '20b' in self.config.model_size else 96,
+                    'hidden_size': 6144 if '20b' in self.config.model_size else 12288,
+                    'torch_dtype': str(self.torch_dtype)
+                }
+            
+            self.memory_guard = MemoryGuard(memory_config, model_config)
+            self.admission_controller = AdmissionController(self.memory_guard)
+            logger.info("✅ Memory management initialized")
             
             load_time = time.time() - start_time
             logger.info(f"✅ Model loaded in {load_time:.1f}s")
@@ -581,13 +635,15 @@ async def lifespan(app: FastAPI):
     """Lifecycle manager"""
     global model_manager
     
-    logger.info("🚀 Server v4.5.4-P0 starting...")
+    logger.info("🚀 Server v4.6.0 starting...")
     logger.info(f"NumPy version: {np.__version__}")
     logger.info(f"PyTorch version: {torch.__version__}")
     logger.info(f"Transformers available: {TRANSFORMERS_AVAILABLE}")
     
-    # Apply default profile
-    config.apply_profile(config.profile)
+    # Apply profile only if not already applied in main()
+    # This prevents overwriting model override from command line
+    if not hasattr(config, '_profile_applied'):
+        config.apply_profile(config.profile)
     
     # Initialize model manager
     model_manager = ModelManager(config)
@@ -608,12 +664,12 @@ async def lifespan(app: FastAPI):
     
     yield
     
-    logger.info("🛑 Server v4.5.4-P0 shutting down...")
+    logger.info("🛑 Server v4.6.0 shutting down...")
 
 # Create FastAPI app
 app = FastAPI(
     title="GPT-OSS HuggingFace Server P0",
-    version="4.5.4-P0",
+    version="4.6.0",
     lifespan=lifespan
 )
 
@@ -633,21 +689,23 @@ async def health():
     """Health check endpoint with model info"""
     global_stats = stats.get_stats()
     
-    # Calculate health score
+    # Calculate health score (adjusted for realistic thresholds)
     error_rate = global_stats["error_rate"]
     p95_e2e = global_stats["p95_e2e_ms"]
+    active_requests = global_stats.get("active_requests", 0)
     
-    if error_rate > 0.01 or p95_e2e > 20000:
-        health_score = 0.5
-    elif error_rate > 0.005 or p95_e2e > 10000:
-        health_score = 0.8
+    # More lenient thresholds for personal use
+    if error_rate > 0.05 or p95_e2e > 30000 or active_requests > 15:
+        health_score = 0.5  # degraded
+    elif error_rate > 0.01 or p95_e2e > 20000 or active_requests > 10:
+        health_score = 0.8  # warning
     else:
-        health_score = 1.0
+        health_score = 1.0  # healthy
     
     return {
         "status": "healthy" if health_score > 0.5 else "degraded",
         "health_score": health_score,
-        "version": "4.5.4-P0",
+        "version": "4.6.0",
         "model": model_manager.model_metadata if model_manager else {},
         "dtype": str(model_manager.torch_dtype) if model_manager else "unknown",
         "profile": config.profile.value,
@@ -663,17 +721,45 @@ async def health():
 @app.get("/stats")
 async def get_stats():
     """Get detailed statistics with model tagging"""
+    # Always update prompt metrics before returning stats
+    if model_manager and model_manager.prompt_builder:
+        stats.update_prompt_metrics(model_manager.prompt_builder.get_metrics())
+    
     global_stats = stats.get_stats()
     
     # Add model metadata
     if model_manager:
         global_stats["model_info"] = model_manager.model_metadata
-        
-        # Update prompt metrics
-        if model_manager.prompt_builder:
-            stats.update_prompt_metrics(model_manager.prompt_builder.get_metrics())
     
     return global_stats
+
+@app.get("/memory_stats")
+async def get_memory_stats():
+    """Get memory management statistics (PR-MEM01/02/03)"""
+    if not model_manager or not model_manager.memory_guard:
+        return {"error": "Memory management not initialized"}
+    
+    memory_stats = model_manager.memory_guard.get_stats()
+    admission_stats = model_manager.admission_controller.get_stats()
+    
+    # Add current GPU memory status
+    if torch.cuda.is_available():
+        gpu_stats = []
+        for i in range(torch.cuda.device_count()):
+            free, total = torch.cuda.mem_get_info(i)
+            gpu_stats.append({
+                "gpu_id": i,
+                "free_gb": free / 1024**3,
+                "total_gb": total / 1024**3,
+                "used_gb": (total - free) / 1024**3,
+                "usage_percent": (total - free) / total * 100
+            })
+        memory_stats["gpu_memory"] = gpu_stats
+    
+    # Merge admission statistics
+    memory_stats.update(admission_stats)
+    
+    return memory_stats
 
 @app.post("/v1/chat/completions")
 async def chat_completion(request: ChatCompletionRequest, req: Request):
@@ -685,16 +771,10 @@ async def chat_completion(request: ChatCompletionRequest, req: Request):
         logger.warning(f"Request {request_id} rejected: too many concurrent requests ({stats.active_requests})")
         raise HTTPException(status_code=503, detail="Server overloaded. Please retry later.")
     
-    # Apply profile if specified
-    if request.profile:
-        try:
-            profile = Profile(request.profile)
-            config.apply_profile(profile)
-            # Reinitialize model if needed
-            global model_manager
-            model_manager = ModelManager(config)
-        except:
-            pass
+    # Apply profile if specified (removed automatic reinitialization)
+    # Profile changes should be done at server startup, not per request
+    # if request.profile:
+    #     logger.warning(f"Profile change requested but ignored to prevent OOM: {request.profile}")
     
     # Check if model is loaded
     if not model_manager or not model_manager.model:
@@ -708,6 +788,55 @@ async def chat_completion(request: ChatCompletionRequest, req: Request):
         "prompt_version": "unknown"
     }
     
+    # PR-MEM01: Admission control with memory estimation
+    session_id = req.headers.get("X-Session-ID", request_id)
+    
+    # Estimate input tokens (rough approximation)
+    messages = [{"role": m.role, "content": m.content} for m in request.messages]
+    input_text = " ".join([m["content"] for m in messages])
+    input_tokens = len(input_text.split()) * 2  # Rough estimate: 1 word ≈ 2 tokens
+    
+    # Check admission with memory guard
+    if model_manager.admission_controller:
+        should_proceed, admission_result = model_manager.admission_controller.check_admission(
+            request_id=request_id,
+            input_tokens=input_tokens,
+            max_new_tokens=request.max_tokens,
+            batch_size=1
+        )
+        
+        logger.info(f"Admission check for {request_id}: {admission_result}")
+        
+        if not should_proceed:
+            stats.record_request_end(start_time, success=False)
+            logger.warning(f"Request {request_id} rejected by admission control: {admission_result['reason']}")
+            raise HTTPException(
+                status_code=503,
+                detail=f"Request rejected: {admission_result['reason']}. Please reduce input size or retry later."
+            )
+        
+        # Apply degradation or routing if needed
+        if admission_result.get('route_to') == '4gpu':
+            # PR-MG01: Route to 4-GPU setup (placeholder for future implementation)
+            logger.info(f"Request {request_id} should be routed to 4-GPU setup")
+            # For now, just reject large requests until 4-GPU routing is implemented
+            raise HTTPException(
+                status_code=503,
+                detail="Large request detected. 4-GPU routing not yet implemented. Please reduce input size."
+            )
+        
+        # Apply degraded parameters if needed
+        if admission_result.get('degraded'):
+            request.max_tokens = admission_result.get('max_new_tokens', request.max_tokens)
+            if 'temperature' in admission_result:
+                request.temperature = admission_result['temperature']
+            if 'top_p' in admission_result:
+                request.top_p = admission_result['top_p']
+            logger.info(f"Request {request_id} degraded: max_tokens={request.max_tokens}")
+        
+        # Register session with memory guard
+        model_manager.memory_guard.register_session(session_id)
+    
     # Record request start
     start_time = stats.record_request_start(
         model_metadata["model_id"],
@@ -720,8 +849,6 @@ async def chat_completion(request: ChatCompletionRequest, req: Request):
     cancelled = False
     
     try:
-        # Convert messages
-        messages = [{"role": m.role, "content": m.content} for m in request.messages]
         
         if request.stream:
             # Track active stream
@@ -841,6 +968,27 @@ async def chat_completion(request: ChatCompletionRequest, req: Request):
     
     finally:
         if not request.stream:
+            # PR-MEM02: Update session memory tracking
+            if model_manager.memory_guard and success:
+                try:
+                    # Estimate KV cache memory for this request
+                    total_tokens = input_tokens + (request.max_tokens if success else 0)
+                    kv_cache_bytes = model_manager.memory_guard.estimate_memory(
+                        input_tokens=input_tokens,
+                        max_new_tokens=request.max_tokens,
+                        batch_size=1
+                    ).kv_cache_bytes
+                    
+                    # Update session
+                    model_manager.memory_guard.update_session(
+                        session_id=session_id,
+                        input_tokens=input_tokens,
+                        output_tokens=request.max_tokens if success else 0,
+                        kv_cache_bytes=kv_cache_bytes
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to update session memory: {e}")
+            
             stats.record_request_end(
                 start_time,
                 success,
@@ -861,27 +1009,37 @@ async def cancel_request(request_id: str):
 
 @app.get("/metrics")
 async def metrics():
-    """Prometheus-compatible metrics endpoint"""
+    """Prometheus-compatible metrics endpoint - PR-OBS01 enhanced"""
     global_stats = stats.get_stats()
     
     metrics_text = []
     
-    # Basic metrics
+    # Get model metadata for labels
+    model_labels = ""
+    if model_manager and model_manager.model_metadata:
+        m = model_manager.model_metadata
+        model_labels = (f'model_id="{m.get("model_id", "unknown")}",'
+                       f'model_size="{m.get("model_size", "unknown")}",'
+                       f'dtype="{m.get("dtype", "unknown")}",'
+                       f'gpu_mode="{m.get("gpu_mode", "unknown")}",'
+                       f'prompt_version="{m.get("prompt_version", "unknown")}"')
+    
+    # Basic metrics with labels
     metrics_text.append(f'# HELP requests_total Total number of requests')
     metrics_text.append(f'# TYPE requests_total counter')
-    metrics_text.append(f'requests_total {global_stats["requests_total"]}')
+    metrics_text.append(f'requests_total{{{model_labels}}} {global_stats["requests_total"]}')
     
     metrics_text.append(f'# HELP requests_active Active requests')
     metrics_text.append(f'# TYPE requests_active gauge')
-    metrics_text.append(f'requests_active {global_stats["active_requests"]}')
+    metrics_text.append(f'requests_active{{{model_labels}}} {global_stats["active_requests"]}')
     
     metrics_text.append(f'# HELP stream_active Active streams')
     metrics_text.append(f'# TYPE stream_active gauge')
-    metrics_text.append(f'stream_active {global_stats["stream_active"]}')
+    metrics_text.append(f'stream_active{{{model_labels}}} {global_stats["stream_active"]}')
     
     metrics_text.append(f'# HELP stream_cancelled_total Total cancelled streams')
     metrics_text.append(f'# TYPE stream_cancelled_total counter')
-    metrics_text.append(f'stream_cancelled_total {global_stats["stream_cancelled_total"]}')
+    metrics_text.append(f'stream_cancelled_total{{{model_labels}}} {global_stats["stream_cancelled_total"]}')
     
     # Model-specific metrics
     if model_manager:
@@ -918,12 +1076,35 @@ async def metrics():
         metrics_text.append(f'# TYPE prompt_cache_hit_rate gauge')
         metrics_text.append(f'prompt_cache_hit_rate {pm.get("cache_hit_rate", 0)}')
     
+    # Memory metrics - PR-SESSION02 & PR-OBS01
+    if model_manager and model_manager.memory_guard:
+        mem_stats = model_manager.memory_guard.get_stats()
+        
+        metrics_text.append(f'# HELP sessions_active Active sessions')
+        metrics_text.append(f'# TYPE sessions_active gauge')
+        metrics_text.append(f'sessions_active{{{model_labels}}} {mem_stats.get("active_sessions", 0)}')
+        
+        metrics_text.append(f'# HELP sessions_evicted_total Total evicted sessions')
+        metrics_text.append(f'# TYPE sessions_evicted_total counter')
+        metrics_text.append(f'sessions_evicted_total{{{model_labels}}} {mem_stats.get("sessions_evicted_total", 0)}')
+        
+        metrics_text.append(f'# HELP kv_in_use_mb KV cache memory in use (MB)')
+        metrics_text.append(f'# TYPE kv_in_use_mb gauge')
+        metrics_text.append(f'kv_in_use_mb{{{model_labels}}} {mem_stats.get("kv_in_use_mb", 0):.1f}')
+        
+        # GPU usage (parse percentage string)
+        gpu_usage_str = mem_stats.get("gpu_usage", "0%")
+        gpu_usage = float(gpu_usage_str.strip('%')) / 100 if '%' in gpu_usage_str else 0
+        metrics_text.append(f'# HELP gpu_memory_usage GPU memory usage percentage')
+        metrics_text.append(f'# TYPE gpu_memory_usage gauge')
+        metrics_text.append(f'gpu_memory_usage{{{model_labels}}} {gpu_usage:.3f}')
+    
     return "\n".join(metrics_text)
 
 # ================== Main ==================
 
 def main():
-    parser = argparse.ArgumentParser(description="GPT-OSS HF Server v4.5.4-P0")
+    parser = argparse.ArgumentParser(description="GPT-OSS HF Server v4.6.0")
     parser.add_argument("--model", type=str, choices=["20b", "120b"], default="20b")
     parser.add_argument("--profile", type=str, choices=["latency_first", "quality_first"], 
                        default="latency_first")
@@ -990,13 +1171,17 @@ def main():
     config.host = args.host
     config.gpu_mode = args.gpu_mode
     
-    # Set profile
+    # Set profile first
     if args.profile == "latency_first":
         config.profile = Profile.LATENCY_FIRST
     else:
         config.profile = Profile.QUALITY_FIRST
     
-    # Override model size if specified
+    # Apply profile
+    config.apply_profile(config.profile)
+    config._profile_applied = True  # Mark that profile was applied
+    
+    # Override model size AFTER profile (so it's not overwritten)
     if args.model == "120b":
         config.model_size = "120b"
         config.model_name = "openai/gpt-oss-120b"

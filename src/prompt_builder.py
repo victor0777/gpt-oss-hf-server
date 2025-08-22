@@ -33,16 +33,21 @@ class PromptVersion(Enum):
 
 @dataclass
 class PromptConfig:
-    """Configuration for prompt building"""
+    """Configuration for prompt building - PR-PF01 enhanced"""
     prompt_version: PromptVersion = PromptVersion.SYS_V1
     max_input_tokens: int = 4096
     normalize_input: bool = True
     remove_timestamps: bool = True
     remove_uuids: bool = True
+    remove_session_ids: bool = True
+    remove_paths: bool = True
+    remove_machine_names: bool = True
+    remove_random_numbers: bool = True
     remove_extra_whitespace: bool = True
     enable_truncation: bool = True
     enable_cache: bool = True
-    cache_ttl: int = 300
+    cache_ttl: int = 600  # PR-CACHE02: Increased from 300
+    cache_max_entries: int = 500  # PR-CACHE02: Configurable cache size
 
 
 @dataclass
@@ -162,7 +167,7 @@ class PromptBuilder:
         return prompt, metadata
     
     def _normalize_messages(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
-        """Normalize message content"""
+        """Normalize message content - PR-PF01 enhanced"""
         if not self.config.normalize_input:
             return messages
         
@@ -170,18 +175,44 @@ class PromptBuilder:
         for msg in messages:
             content = msg["content"]
             
-            # Remove timestamps
+            # Remove timestamps (enhanced)
             if self.config.remove_timestamps:
-                content = re.sub(r'\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}', '', content)
-                content = re.sub(r'\d{1,2}/\d{1,2}/\d{4}', '', content)
+                content = re.sub(r'\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}[\w\.]*', '<timestamp>', content)
+                content = re.sub(r'\d{1,2}[:/]\d{1,2}[:/]\d{2,4}', '<date>', content)
+                content = re.sub(r'\d{1,2}:\d{2}(:\d{2})?\s*(AM|PM|am|pm)?', '<time>', content)
             
-            # Remove UUIDs
+            # Remove UUIDs (enhanced)
             if self.config.remove_uuids:
                 content = re.sub(
                     r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
-                    '',
+                    '<uuid>',
                     content
                 )
+            
+            # Remove session IDs (new)
+            if self.config.remove_session_ids:
+                content = re.sub(r'session[_-]?id[=:]?\s*[\w-]+', '<session_id>', content, flags=re.IGNORECASE)
+                content = re.sub(r'sid[=:]?\s*[\w-]+', '<session_id>', content, flags=re.IGNORECASE)
+                content = re.sub(r'X-Session-ID[=:]?\s*[\w-]+', '<session_id>', content, flags=re.IGNORECASE)
+            
+            # Remove file paths (new)
+            if self.config.remove_paths:
+                content = re.sub(r'[/\\](?:home|users|var|tmp|etc|usr)[/\\][^\s]+', '<path>', content)
+                content = re.sub(r'[A-Z]:\\\\[^\s]+', '<path>', content)  # Windows paths
+                content = re.sub(r'\./[\w/]+', '<path>', content)  # Relative paths
+            
+            # Remove machine names (new)
+            if self.config.remove_machine_names:
+                content = re.sub(r'localhost:\d+', '<host>', content)
+                content = re.sub(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', '<ip>', content)
+                content = re.sub(r'[a-zA-Z0-9-]+\.local', '<hostname>', content)
+                content = re.sub(r'http[s]?://[^\s]+', '<url>', content)
+            
+            # Remove random numbers (new)
+            if self.config.remove_random_numbers:
+                content = re.sub(r'\b[a-f0-9]{32,}\b', '<hash>', content)  # Long hashes
+                content = re.sub(r'\b0x[a-f0-9]{8,}\b', '<hex>', content)  # Hex numbers
+                content = re.sub(r'request[_-]?id[=:]?\s*[\w-]+', '<request_id>', content, flags=re.IGNORECASE)
             
             # Remove extra whitespace
             if self.config.remove_extra_whitespace:

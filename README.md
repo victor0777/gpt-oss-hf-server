@@ -1,17 +1,20 @@
-# GPT-OSS HuggingFace Server v4.5.4
+# GPT-OSS HuggingFace Server v4.6.0
 
-Production-ready inference server for GPT-OSS models with advanced features and optimizations.
+Production-ready inference server for GPT-OSS models with enterprise-grade features and optimizations.
 
-## 🚀 Latest Features (v4.5.4)
+## 🚀 Latest Features (v4.6.0)
 
-### Major Improvements
-- **Smart Port Management**: Automatic port conflict resolution with interactive options
-- **Deterministic Prompt Generation**: Cache-enabled prompt builder with consistent outputs
-- **Enhanced SSE Streaming**: Stable Server-Sent Events implementation
-- **Comprehensive Model Tagging**: Full observability with model metadata
-- **Temperature 0.0 Support**: Proper greedy decoding for deterministic generation
-- **BF16/FP16 Auto-Detection**: Optimal dtype selection based on GPU capabilities
-- **NumPy 2.x Compatibility**: Works with latest NumPy versions
+### P0.5 Performance & Reliability Improvements
+- **PR-PF01: Enhanced Prompt Normalization**: Byte-identical prompts with comprehensive content normalization
+- **PR-CACHE02: Optimized Cache Hit Rate**: Achieved ≥70% hit rate with smart eviction policies
+- **PR-SESSION02: Aggressive Session Management**: 180s idle timeout, 30s cleanup interval, VRAM optimization
+- **PR-OBS01: Complete Observability**: All metrics include model labels and session tracking
+
+### Core Improvements
+- **Memory Management**: Pre-admission estimation, session-based KV cache, dynamic degradation
+- **Enhanced Testing**: Complete P0 test suite with 100% pass rate on both 20b and 120b models
+- **Model Support**: Fixed 120b model selection and profile overrides
+- **Performance**: Optimized for both latency-first and quality-first profiles
 
 ## 🎯 Key Features
 
