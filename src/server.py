@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-GPT-OSS HuggingFace Server v4.7.0
+GPT-OSS HuggingFace Server v4.8.0
 - P0 improvements: PromptBuilder, SSE stabilization, model tagging
 - BF16 tensor type for A100 compatibility
 - NumPy 2.x compatible (sklearn bypass)
 - Personal use optimized profiles
+- Observability: Metrics-trace correlation, exemplars, sampling
 """
 
 import os
@@ -76,7 +77,7 @@ builtins.__import__ = _original_import
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, Field
 import uvicorn
 
@@ -85,6 +86,8 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from prompt_builder import PromptBuilder, PromptConfig, GenerationParams, PromptVersion
 from memory_guard import MemoryGuard, MemoryConfig, AdmissionController
 from gpu_router import GPURouter, RoutingConfig, RoutingMode
+from observability import ObservabilityManager, ObservabilityConfig, get_observability_manager
+from structured_logging import StructuredLogger, EventType, get_structured_logger
 
 # ================== Configuration ==================
 
@@ -178,6 +181,8 @@ class ModelManager:
         self.memory_guard = None
         self.admission_controller = None
         self.gpu_router = None  # PR-MG01: GPU Router for large requests
+        self.observability = None  # PR-OBS-A1/A2/A3: Observability manager
+        self.structured_logger = None  # PR-OBS-B1: Structured logging
         self._initialize()
     
     def __del__(self):
@@ -305,6 +310,24 @@ class ModelManager:
             self.gpu_router = GPURouter(routing_config)
             logger.info("✅ GPU Router initialized for 4-GPU auto-routing")
             
+            # Initialize Observability Manager for PR-OBS-A1/A2/A3
+            obs_config = ObservabilityConfig(
+                exemplars_enabled=True,
+                slow_trace_threshold_ms=10000,
+                normal_trace_sample_rate=0.03
+            )
+            self.observability = get_observability_manager(obs_config)
+            logger.info("✅ Observability initialized with tracing and metrics")
+            
+            # Initialize Structured Logger for PR-OBS-B1
+            self.structured_logger = get_structured_logger("gpt-oss-server", "INFO")
+            self.structured_logger.log_memory_pressure(
+                pressure=self.memory_guard._get_gpu_memory_usage() if self.memory_guard else 0,
+                action="initialization",
+                metadata={"model_size": self.config.model_size, "gpu_mode": self.gpu_mode}
+            )
+            logger.info("✅ Structured logging initialized")
+            
             load_time = time.time() - start_time
             logger.info(f"✅ Model loaded in {load_time:.1f}s")
             logger.info(f"Model metadata: {self.model_metadata}")
@@ -342,7 +365,7 @@ class ModelManager:
                 yield json.dumps({"error": "Model not loaded"})
             return
         
-        # Build prompt using PromptBuilder
+        # Build prompt using PromptBuilder with span tracking (PR-OBS-B3)
         params = GenerationParams(
             temperature=temperature,
             top_p=top_p,
@@ -350,14 +373,51 @@ class ModelManager:
             seed=seed
         )
         
-        prompt, prompt_metadata = self.prompt_builder.build(
-            messages,
-            params,
-            self.model_metadata["model_id"]
-        )
+        # Create span for prompt building
+        if self.observability:
+            with self.observability.create_span("prompt_building", "preparation") as span:
+                prompt, prompt_metadata = self.prompt_builder.build(
+                    messages,
+                    params,
+                    self.model_metadata["model_id"]
+                )
+                span.set_attribute("cache_hit", prompt_metadata.get('cache_hit', False))
+                span.set_attribute("tokens_before", prompt_metadata.get('tokens_before', 0))
+                span.set_attribute("truncated", prompt_metadata.get('truncated', False))
+        else:
+            prompt, prompt_metadata = self.prompt_builder.build(
+                messages,
+                params,
+                self.model_metadata["model_id"]
+            )
         
-        # Log prompt metadata
+        # Log prompt metadata with structured logging
         logger.info(f"Request {request_id}: Prompt built - {prompt_metadata}")
+        if self.structured_logger:
+            self.structured_logger.log_cache_event(
+                request_id=request_id,
+                hit=prompt_metadata.get('cache_hit', False),
+                cache_key=prompt_metadata.get('cache_key', ''),
+                metadata=prompt_metadata
+            )
+        
+        # Record cache hit/miss metrics for PR-OBS-A2
+        if self.observability:
+            labels = {
+                'model_id': self.model_metadata.get('model_id', 'unknown'),
+                'model_size': self.model_metadata.get('model_size', 'unknown'),
+                'dtype': self.model_metadata.get('dtype', 'unknown'),
+                'route': 'single',
+                'tp': '1',
+                'pp': '1',
+                'micro_batches': '1',
+                'prompt_version': prompt_metadata.get('prompt_version', 'unknown'),
+                'admission_action': 'accept'
+            }
+            self.observability.record_cache_hit(
+                prompt_metadata.get('cache_hit', False),
+                labels
+            )
         
         try:
             # Tokenize
@@ -396,14 +456,29 @@ class ModelManager:
                 async for token in self._stream_generate(input_ids, gen_kwargs, request_id):
                     yield token
             else:
-                # Non-streaming generation
-                with torch.no_grad():
-                    outputs = self.model.generate(input_ids, **gen_kwargs)
-                
-                response = self.tokenizer.decode(
-                    outputs[0][len(input_ids[0]):],
-                    skip_special_tokens=True
-                )
+                # Non-streaming generation with span tracking (PR-OBS-B3)
+                if self.observability:
+                    with self.observability.create_span("model_generation", "inference") as span:
+                        span.set_attribute("max_new_tokens", max_tokens)
+                        span.set_attribute("temperature", temperature)
+                        span.set_attribute("top_p", top_p)
+                        
+                        with torch.no_grad():
+                            outputs = self.model.generate(input_ids, **gen_kwargs)
+                        
+                        response = self.tokenizer.decode(
+                            outputs[0][len(input_ids[0]):],
+                            skip_special_tokens=True
+                        )
+                        span.set_attribute("output_tokens", len(outputs[0]) - len(input_ids[0]))
+                else:
+                    with torch.no_grad():
+                        outputs = self.model.generate(input_ids, **gen_kwargs)
+                    
+                    response = self.tokenizer.decode(
+                        outputs[0][len(input_ids[0]):],
+                        skip_special_tokens=True
+                    )
                 
                 result = {
                     "response": response,
@@ -413,6 +488,18 @@ class ModelManager:
                         "request_id": request_id
                     }
                 }
+                
+                # Update GPU metrics for PR-OBS-A2
+                if self.observability and torch.cuda.is_available():
+                    gpu_stats = {}
+                    for i in range(torch.cuda.device_count()):
+                        free, total = torch.cuda.mem_get_info(i)
+                        gpu_stats[i] = {
+                            'utilization': 0,  # Would need nvidia-ml-py for actual GPU utilization
+                            'memory_used': total - free
+                        }
+                    self.observability.update_gpu_metrics(gpu_stats)
+                
                 yield json.dumps(result)
         
         except torch.cuda.OutOfMemoryError as e:
@@ -649,7 +736,7 @@ async def lifespan(app: FastAPI):
     """Lifecycle manager"""
     global model_manager
     
-    logger.info("🚀 Server v4.7.0 starting...")
+    logger.info("🚀 Server v4.8.0 starting...")
     logger.info(f"NumPy version: {np.__version__}")
     logger.info(f"PyTorch version: {torch.__version__}")
     logger.info(f"Transformers available: {TRANSFORMERS_AVAILABLE}")
@@ -678,7 +765,7 @@ async def lifespan(app: FastAPI):
     
     yield
     
-    logger.info("🛑 Server v4.7.0 shutting down...")
+    logger.info("🛑 Server v4.8.0 shutting down...")
 
 # Create FastAPI app
 app = FastAPI(
@@ -719,7 +806,7 @@ async def health():
     return {
         "status": "healthy" if health_score > 0.5 else "degraded",
         "health_score": health_score,
-        "version": "4.7.0",
+        "version": "4.8.0",
         "model": model_manager.model_metadata if model_manager else {},
         "dtype": str(model_manager.torch_dtype) if model_manager else "unknown",
         "profile": config.profile.value,
@@ -731,6 +818,27 @@ async def health():
             "p95_e2e_ms": global_stats["p95_e2e_ms"]
         }
     }
+
+@app.get("/admin/debug/bundle")
+async def debug_bundle():
+    """PR-OBS-B2: Debug bundle endpoint for issue reporting"""
+    if not model_manager or not model_manager.observability:
+        raise HTTPException(status_code=503, detail="Observability not initialized")
+    
+    bundle = model_manager.observability.create_debug_bundle()
+    
+    # Add current stats
+    bundle["stats"] = stats.get_stats()
+    
+    # Add memory stats if available
+    if model_manager.memory_guard:
+        bundle["memory_stats"] = model_manager.memory_guard.get_stats()
+    
+    # Add GPU routing stats if available
+    if model_manager.gpu_router:
+        bundle["gpu_routing"] = model_manager.gpu_router.get_stats()
+    
+    return bundle
 
 @app.get("/stats")
 async def get_stats():
@@ -781,8 +889,9 @@ async def get_memory_stats():
 
 @app.post("/v1/chat/completions")
 async def chat_completion(request: ChatCompletionRequest, req: Request):
-    """Chat completion endpoint with P0 improvements"""
+    """Chat completion endpoint with P0 improvements and observability"""
     request_id = str(uuid.uuid4())
+    trace_ctx = None
     
     # Check concurrent request limit
     if stats.active_requests >= 10:  # Max 10 concurrent requests
@@ -825,6 +934,33 @@ async def chat_completion(request: ChatCompletionRequest, req: Request):
         
         logger.info(f"Admission check for {request_id}: {admission_result}")
         
+        # Structured logging for admission decision (PR-OBS-B1)
+        if model_manager.structured_logger:
+            model_manager.structured_logger.log_admission_decision(
+                request_id=request_id,
+                action=admission_result.get('action', 'unknown'),
+                reason=admission_result.get('reason', ''),
+                metadata=admission_result
+            )
+        
+        # Record admission metrics for PR-OBS-A2
+        if model_manager.observability:
+            labels = {
+                'model_id': model_metadata.get('model_id', 'unknown'),
+                'model_size': model_metadata.get('model_size', 'unknown'),
+                'dtype': model_metadata.get('dtype', 'unknown'),
+                'route': 'single',
+                'tp': '1',
+                'pp': '1',
+                'micro_batches': '1',
+                'prompt_version': model_metadata.get('prompt_version', 'unknown'),
+                'admission_action': admission_result.get('action', 'unknown')
+            }
+            model_manager.observability.record_admission(
+                admission_result.get('action', 'unknown'),
+                labels
+            )
+        
         if not should_proceed:
             stats.record_request_end(start_time, success=False)
             logger.warning(f"Request {request_id} rejected by admission control: {admission_result['reason']}")
@@ -860,6 +996,20 @@ async def chat_completion(request: ChatCompletionRequest, req: Request):
             if gpu_routing_decision.admission_action in stats.routing_stats:
                 stats.routing_stats[gpu_routing_decision.admission_action] += 1
             
+            # Structured logging for routing decision (PR-OBS-B1)
+            if model_manager.structured_logger:
+                route_type = "multi_gpu" if gpu_routing_decision.should_use_multi_gpu else "single_gpu"
+                model_manager.structured_logger.log_routing_decision(
+                    request_id=request_id,
+                    route=route_type,
+                    reason=gpu_routing_decision.reason,
+                    metadata={
+                        "admission_action": gpu_routing_decision.admission_action,
+                        "mode": gpu_routing_decision.mode.value if gpu_routing_decision.mode else None,
+                        "gpu_config": gpu_routing_decision.gpu_config
+                    }
+                )
+            
             if gpu_routing_decision.should_use_multi_gpu:
                 logger.info(f"Request {request_id} should use multi-GPU: {gpu_routing_decision.reason}")
                 
@@ -887,6 +1037,17 @@ async def chat_completion(request: ChatCompletionRequest, req: Request):
         # Register session with memory guard
         model_manager.memory_guard.register_session(session_id)
     
+    # Initialize observability context
+    obs_manager = model_manager.observability if model_manager else None
+    trace_id = None
+    trace_ctx_manager = None
+    
+    # Start tracing if available
+    if obs_manager:
+        trace_ctx_manager = obs_manager.trace_request(request_id, "chat_completion")
+        trace_ctx = trace_ctx_manager.__enter__()
+        trace_id = trace_ctx.get('trace_id')
+    
     # Record request start
     start_time = stats.record_request_start(
         model_metadata["model_id"],
@@ -894,9 +1055,21 @@ async def chat_completion(request: ChatCompletionRequest, req: Request):
         model_metadata["prompt_version"]
     )
     
+    # Structured logging for request start (PR-OBS-B1)
+    if model_manager.structured_logger:
+        model_manager.structured_logger.log_request_start(
+            request_id=request_id,
+            trace_id=trace_id,
+            model_id=model_metadata.get("model_id"),
+            model_size=model_metadata.get("model_size"),
+            max_tokens=request.max_tokens,
+            temperature=request.temperature
+        )
+    
     ttft = None
     success = False
     cancelled = False
+    e2e_ms = None
     
     try:
         
@@ -927,6 +1100,22 @@ async def chat_completion(request: ChatCompletionRequest, req: Request):
                         if first_token:
                             ttft = time.time() - start_time
                             first_token = False
+                            
+                            # Record TTFT metric with trace_id
+                            if obs_manager:
+                                ttft_ms = ttft * 1000
+                                labels = {
+                                    'model_id': model_metadata.get('model_id', 'unknown'),
+                                    'model_size': model_metadata.get('model_size', 'unknown'),
+                                    'dtype': model_metadata.get('dtype', 'unknown'),
+                                    'route': 'single',
+                                    'tp': '1',
+                                    'pp': '1',
+                                    'micro_batches': '1',
+                                    'prompt_version': model_metadata.get('prompt_version', 'unknown'),
+                                    'admission_action': 'accept'
+                                }
+                                obs_manager.record_ttft(ttft_ms, labels, trace_id)
                         
                         yield chunk
                         
@@ -1017,6 +1206,10 @@ async def chat_completion(request: ChatCompletionRequest, req: Request):
         raise HTTPException(status_code=500, detail=str(e))
     
     finally:
+        # Calculate end-to-end time
+        if start_time:
+            e2e_ms = (time.time() - start_time) * 1000
+        
         if not request.stream:
             # PR-MEM02: Update session memory tracking
             if model_manager.memory_guard and success:
@@ -1048,6 +1241,59 @@ async def chat_completion(request: ChatCompletionRequest, req: Request):
                 ttft,
                 cancelled
             )
+            
+            # Structured logging for request end (PR-OBS-B1)
+            if model_manager.structured_logger and e2e_ms:
+                model_manager.structured_logger.log_request_end(
+                    request_id=request_id,
+                    duration_ms=e2e_ms,
+                    success=success,
+                    ttft_ms=ttft,
+                    cancelled=cancelled,
+                    input_tokens=input_tokens,
+                    output_tokens=request.max_tokens if success else 0
+                )
+            
+            # Record token metrics for PR-OBS-A2
+            if model_manager.observability and success:
+                labels = {
+                    'model_id': model_metadata.get('model_id', 'unknown'),
+                    'model_size': model_metadata.get('model_size', 'unknown'),
+                    'dtype': model_metadata.get('dtype', 'unknown'),
+                    'route': 'single',
+                    'tp': '1',
+                    'pp': '1',
+                    'micro_batches': '1',
+                    'prompt_version': model_metadata.get('prompt_version', 'unknown'),
+                    'admission_action': stats.admission_action or 'accept'
+                }
+                
+                # Record prefill tokens (input)
+                model_manager.observability.llm_prefill_tokens_total.labels(**labels).inc(input_tokens)
+                
+                # Record decode tokens (output)
+                output_tokens = request.max_tokens if success else 0
+                model_manager.observability.llm_decode_tokens_total.labels(**labels).inc(output_tokens)
+                
+                # Record end-to-end time
+                if e2e_ms:
+                    model_manager.observability.record_e2e(e2e_ms, labels, trace_id)
+                
+                # Record tokens per second if we have timing
+                if e2e_ms and output_tokens > 0:
+                    tps = output_tokens / (e2e_ms / 1000)
+                    model_manager.observability.record_tokens_per_sec(tps, labels)
+                
+                # Update session and KV cache metrics
+                if model_manager.memory_guard:
+                    mem_stats = model_manager.memory_guard.get_stats()
+                    active_sessions = mem_stats.get("active_sessions", 0)
+                    kv_bytes = int(mem_stats.get("kv_in_use_mb", 0) * 1024 * 1024)
+                    model_manager.observability.update_session_metrics(active_sessions, kv_bytes, labels)
+        
+        # Clean up trace context
+        if trace_ctx_manager:
+            trace_ctx_manager.__exit__(None, None, None)
 
 @app.post("/cancel/{request_id}")
 async def cancel_request(request_id: str):
@@ -1059,11 +1305,18 @@ async def cancel_request(request_id: str):
 
 @app.get("/metrics")
 async def metrics():
-    """Prometheus-compatible metrics endpoint - PR-OBS01 enhanced"""
+    """Prometheus-compatible metrics endpoint - PR-OBS01/A2 enhanced with observability"""
     global_stats = stats.get_stats()
     
     metrics_text = []
     
+    # Add observability metrics if available
+    if model_manager and model_manager.observability:
+        obs_metrics = model_manager.observability.get_metrics()
+        if obs_metrics:
+            return Response(content=obs_metrics, media_type="text/plain; version=0.0.4")
+    
+    # Fallback to legacy metrics
     # Get model metadata for labels
     model_labels = ""
     if model_manager and model_manager.model_metadata:
@@ -1154,7 +1407,7 @@ async def metrics():
 # ================== Main ==================
 
 def main():
-    parser = argparse.ArgumentParser(description="GPT-OSS HF Server v4.7.0")
+    parser = argparse.ArgumentParser(description="GPT-OSS HF Server v4.8.0")
     parser.add_argument("--model", type=str, choices=["20b", "120b"], default="20b")
     parser.add_argument("--profile", type=str, choices=["latency_first", "quality_first"], 
                        default="latency_first")

@@ -1,28 +1,55 @@
-# GPT-OSS HuggingFace Server v4.7.0
+# GPT-OSS HuggingFace Server v4.8.0
 
-Production-ready inference server for GPT-OSS models with enterprise-grade features and optimizations.
+Production-ready inference server for GPT-OSS models with enterprise-grade observability and multi-GPU intelligence.
 
-## 🚀 Latest Features (v4.7.0)
+## 🚀 Latest Features (v4.8.0)
 
-### NEW: GPU Routing & Multi-GPU Intelligence
+### NEW: Observability Foundation Pack
+- **PR-OBS-A1: Metrics↔Trace Correlation**: OpenTelemetry tracing with Prometheus exemplars
+  - Full request tracing with trace_id correlation
+  - Distributed tracing for debugging and performance analysis
+  - Configurable OTLP endpoint for trace export
+  
+- **PR-OBS-A2: LLM Core Metrics**: Comprehensive LLM-specific metrics
+  - Time to first token (TTFT) histograms
+  - End-to-end latency tracking with percentiles
+  - Token generation rate (TPS) monitoring  
+  - Cache hit/miss ratios with detailed reasons
+  - Admission control decision tracking
+  - GPU utilization and memory usage gauges
+  - All metrics include rich model labels
+
+- **PR-OBS-A3: Intelligent Sampling**: Smart trace sampling for production efficiency
+  - 100% sampling for errors and slow requests (>10s)
+  - 3% sampling for normal requests to reduce overhead
+  - Configurable thresholds for different environments
+
+- **PR-OBS-B1: Structured JSON Logging**: Production-ready structured logging
+  - JSON-formatted log entries for machine parsing
+  - Event-based logging with consistent schemas
+  - Request correlation across all log entries
+  - Performance metrics logging with context
+
+- **PR-OBS-B2: Debug Bundle Endpoint**: Comprehensive diagnostics
+  - `/admin/debug/bundle` for issue reporting
+  - System snapshot with GPU, memory, and configuration details
+  - Automated debugging information collection
+
+- **PR-OBS-B3: Parallel Operation Spans**: Fine-grained tracing
+  - Child spans for prompt building and model generation
+  - Span attributes for cache hits, token counts, and timing
+  - Full operation visibility for performance optimization
+
+### v4.7.0 GPU Intelligence & Routing
 - **PR-MG01: Large-Path Auto Routing**: Intelligent GPU routing for large requests
-  - Automatic detection of requests needing multi-GPU (>8000 tokens or >6000MB KV cache)
-  - NCCL optimization for multi-GPU communication
-  - Real-time routing statistics and GPU balance monitoring
-  - Works seamlessly with existing HuggingFace device_map mechanism
+  - Automatic multi-GPU routing for >8000 tokens or >6000MB KV cache
+  - NCCL optimization and real-time routing statistics
+  - Seamless integration with HuggingFace device_map
 
-### v4.6.0 Performance & Reliability Improvements
-- **PR-PF01: Enhanced Prompt Normalization**: Byte-identical prompts with comprehensive content normalization
-- **PR-CACHE02: Optimized Cache Hit Rate**: Achieved ≥70% hit rate with smart eviction policies
-- **PR-SESSION02: Aggressive Session Management**: 180s idle timeout, 30s cleanup interval, VRAM optimization
-- **PR-OBS01: Complete Observability**: All metrics include model labels and session tracking
-
-### Core Improvements
-- **GPU Router**: Intelligent routing decisions with configurable thresholds
-- **Memory Management**: Pre-admission estimation, session-based KV cache, dynamic degradation
-- **Enhanced Testing**: Complete P0 test suite with GPU routing validation
-- **Model Support**: Fixed 120b model selection and profile overrides
-- **Performance**: Optimized for both latency-first and quality-first profiles
+### Core Foundation (v4.6.0-v4.7.0)
+- **Enhanced Performance**: 70%+ cache hit rates, optimized session management
+- **Memory Management**: Pre-admission estimation with dynamic degradation
+- **Model Support**: Complete 20b/120b model support with profile overrides
 
 ## 🎯 Key Features
 
@@ -91,6 +118,18 @@ python src/server.py --model 20b --profile latency_first --port 8000 --force-por
 | `latency_first` | 20B | 0.5-2s | Daily development, quick responses |
 | `quality_first` | 120B | 3-8s | Complex tasks, high-quality output |
 
+### Observability Configuration (v4.8.0)
+
+```bash
+# Enable OpenTelemetry tracing
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+python src/server.py --model 120b --profile latency_first
+
+# Access observability endpoints
+curl http://localhost:8000/metrics          # Prometheus metrics
+curl http://localhost:8000/admin/debug/bundle  # Debug information
+```
+
 ### GPU Routing Configuration (v4.7.0)
 
 ```bash
@@ -118,8 +157,13 @@ The server automatically routes large requests (>8000 tokens) to multi-GPU confi
 
 ### Individual Test Modules
 ```bash
+# Core feature tests
 python tests/p0/test_1_prompt_determinism.py  # Prompt builder tests
 python tests/p0/test_2_sse_streaming.py       # SSE streaming tests
+
+# Observability tests (v4.8.0)
+python tests/p0/test_v48x_observability.py     # P0 observability features
+python tests/p0/test_v48x_p1_observability.py  # P1 structured logging & spans
 python tests/p0/test_3_model_tagging.py       # Model tagging tests
 python tests/p0/test_4_performance.py         # Performance benchmarks
 ```
@@ -234,6 +278,40 @@ python src/server.py --model 120b --gpu-mode tensor
 export CUDA_VISIBLE_DEVICES=0,1,2,3  # Select specific GPUs
 export HF_HOME=/path/to/models       # Model cache directory
 export TORCH_DTYPE=bfloat16         # Force specific dtype
+
+# Observability configuration (v4.8.0)
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317  # OpenTelemetry endpoint
+export OTEL_SERVICE_NAME=gpt-oss-hf-server               # Service name for tracing
+```
+
+## 📡 API Endpoints
+
+### Core Endpoints
+- `POST /v1/chat/completions` - OpenAI-compatible chat completions
+- `GET /health` - Health check and server status
+- `GET /stats` - Server statistics including GPU routing
+- `GET /memory_stats` - Memory management statistics
+
+### Observability Endpoints (v4.8.0)
+- `GET /metrics` - Prometheus metrics (LLM-specific histograms, counters, gauges)
+- `GET /admin/debug/bundle` - Debug bundle for issue reporting
+
+### Example Usage
+```bash
+# Get server health
+curl http://localhost:8000/health
+
+# Get Prometheus metrics
+curl http://localhost:8000/metrics
+
+# Get debug information
+curl http://localhost:8000/admin/debug/bundle | jq .
+
+# Monitor GPU routing stats
+curl http://localhost:8000/stats | jq '.gpu_routing'
+
+# Check memory pressure
+curl http://localhost:8000/memory_stats | jq '.memory_pressure'
 ```
 
 ## 🎯 Supported GPUs

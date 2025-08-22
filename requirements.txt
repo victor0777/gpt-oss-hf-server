@@ -23,6 +23,8 @@ triton>=2.0.0  # For Triton kernels
 opentelemetry-api>=1.18.0
 opentelemetry-sdk>=1.18.0
 opentelemetry-exporter-otlp>=1.18.0
+opentelemetry-exporter-otlp-proto-grpc>=1.18.0
+prometheus-client>=0.17.0
 
 # Development tools
 pytest>=7.3.0
