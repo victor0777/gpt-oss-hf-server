@@ -1,8 +1,8 @@
-# GPU Routing in v4.7.0
+# GPU Routing in v4.8.0
 
 ## Overview
 
-The GPT-OSS HF Server v4.7.0 introduces intelligent GPU routing (PR-MG01) that works alongside the existing HuggingFace device_map mechanism to optimize resource utilization for large requests.
+The GPT-OSS HF Server v4.8.0 features intelligent GPU routing (PR-MG01) with comprehensive observability integration that works alongside the existing HuggingFace device_map mechanism to optimize resource utilization for large requests. This version adds full telemetry, structured logging, and performance metrics for GPU routing decisions.
 
 ## Key Concepts
 
@@ -100,9 +100,55 @@ python src/server.py --model 120b --gpu-mode auto
 # Statistics show route4 percentage and triggers
 ```
 
-## Metrics and Observability
+## v4.8.0 Observability Integration
 
-The router provides statistics via `/stats` endpoint:
+### Prometheus Metrics
+GPU routing now provides comprehensive metrics via `/metrics` endpoint:
+```
+# GPU routing decision counters
+llm_admission_total{action="route4",model_id="gpt-oss-120b"} 25
+llm_admission_total{action="single",model_id="gpt-oss-120b"} 75
+
+# GPU utilization gauges
+gpu_utilization{gpu="0",model_id="gpt-oss-120b"} 0.65
+gpu_utilization{gpu="1",model_id="gpt-oss-120b"} 0.62
+gpu_utilization{gpu="2",model_id="gpt-oss-120b"} 0.63
+gpu_utilization{gpu="3",model_id="gpt-oss-120b"} 0.64
+
+# GPU memory usage
+gpu_mem_used_bytes{gpu="0",model_id="gpt-oss-120b"} 15032385536
+```
+
+### Structured Logging
+All routing decisions are logged with structured JSON:
+```json
+{
+  "timestamp": "2024-01-01T12:00:00.000Z",
+  "level": "info",
+  "event_type": "routing.decision",
+  "request_id": "req_12345",
+  "trace_id": "trace_abc",
+  "route": "multi_gpu",
+  "reason": "large_input: 10000 > 8000 tokens",
+  "metadata": {
+    "input_tokens": 10000,
+    "predicted_kv_mb": 7500,
+    "gpu_memory_pressure": 0.72
+  }
+}
+```
+
+### OpenTelemetry Tracing
+Routing decisions create spans for distributed tracing:
+- Parent span: `chat_completion`
+- Child span: `routing_decision` with attributes:
+  - `routing.input_tokens`
+  - `routing.predicted_kv_mb`
+  - `routing.decision`
+  - `routing.trigger_reason`
+
+### Statistics Endpoint
+The router provides detailed statistics via `/stats` endpoint:
 ```json
 {
   "gpu_routing": {
@@ -128,13 +174,50 @@ The router provides statistics via `/stats` endpoint:
 }
 ```
 
-## Future Enhancements
+## v4.8.0 Observability Features
 
-Potential improvements for dynamic GPU redistribution:
-1. Integration with DeepSpeed for dynamic parallelism
-2. FairScale for flexible model sharding
-3. Runtime device_map updates (requires model reload)
-4. Request-based GPU allocation pools
+### Debug Bundle Integration
+GPU routing information is included in `/admin/debug/bundle`:
+```json
+{
+  "gpu_routing": {
+    "current_mode": "auto",
+    "total_requests": 1000,
+    "route4_percentage": 32.5,
+    "trigger_breakdown": {
+      "large_input": 245,
+      "large_kv": 67,
+      "memory_pressure": 13
+    },
+    "performance_metrics": {
+      "avg_single_gpu_latency_ms": 4500,
+      "avg_multi_gpu_latency_ms": 3200,
+      "gpu_utilization_balance": 0.95
+    }
+  }
+}
+```
+
+### Performance Monitoring
+Real-time GPU routing performance tracking:
+- Route decision latency (<50ms)
+- GPU balance coefficient (>0.9 ideal)
+- Memory pressure impact on routing
+- Cache hit rate correlation with routing decisions
+
+## Future Enhancements (v4.9.0+)
+
+### ML-Based Routing (Planned)
+1. Predictive routing based on request patterns
+2. Dynamic threshold adjustment using historical performance
+3. Request queue optimization for GPU utilization
+4. Adaptive load balancing across GPU configurations
+
+### Advanced Observability
+1. GPU routing heat maps in Grafana dashboards
+2. SLA-based routing decision alerts
+3. Cost optimization metrics for multi-GPU usage
+4. A/B testing framework for routing strategies
 
 ## Troubleshooting
 
