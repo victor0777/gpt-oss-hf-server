@@ -300,25 +300,56 @@ for line in response.iter_lines():
 
 ```
 gpt-oss-hf-server/
-├── src/
-│   ├── server.py           # Main server (v4.5.4)
-│   ├── prompt_builder.py   # Deterministic prompt generation
-│   └── port_manager.py     # Port management utilities
-├── tests/
-│   └── p0/                 # P0 feature tests
-│       ├── test_1_prompt_determinism.py
-│       ├── test_2_sse_streaming.py
-│       ├── test_3_model_tagging.py
-│       ├── test_4_performance.py
-│       └── test_integration.py
-├── configs/
-│   └── server_config.yaml  # Server configuration
-├── reports/                # Test reports
-├── logs/                   # Server logs
-├── requirements.txt        # Python dependencies
-├── run_tests.sh           # Unified test runner
-├── CLAUDE.md              # Claude Code instructions
-└── README.md              # This file
+├── src/                           # Core server implementation
+│   ├── server.py                  # Main server with v4.8.0 observability
+│   ├── observability.py          # ObservabilityManager (OpenTelemetry + Prometheus)
+│   ├── structured_logging.py     # StructuredLogger (JSON event logging)
+│   ├── prompt_builder.py         # Deterministic prompt generation
+│   ├── memory_guard.py           # Session-based KV cache management
+│   ├── gpu_router.py             # Intelligent GPU routing
+│   ├── engine_client.py          # HuggingFace model client
+│   └── port_manager.py           # Port management utilities
+├── tests/                         # Comprehensive test suite
+│   ├── p0/                        # P0 critical feature tests (11 modules)
+│   │   ├── test_v48x_observability.py      # P0 observability (7 tests)
+│   │   ├── test_v48x_p1_observability.py   # P1 observability (9 tests)
+│   │   ├── test_1_prompt_determinism.py    # Cache & determinism
+│   │   ├── test_2_sse_streaming.py         # SSE streaming
+│   │   ├── test_3_model_tagging.py         # Model metadata
+│   │   ├── test_4_performance.py           # Performance benchmarks
+│   │   ├── test_v46x_improvements.py       # v4.6.x features
+│   │   ├── test_v47x_gpu_routing.py        # v4.7.x GPU routing
+│   │   ├── test_integration.py             # End-to-end integration
+│   │   ├── test_integration_p0.py          # P0 integration scenarios
+│   │   └── test_memory_management.py       # Memory guard & admission
+│   ├── test_120b.py               # 120B model-specific tests
+│   ├── test_qps.py                # Performance benchmarking
+│   ├── test_status.py             # Health check tests
+│   └── test_v45.py                # Legacy compatibility tests
+├── scripts/                       # Utility scripts
+│   ├── gpu_monitor.py             # GPU monitoring utilities
+│   ├── release_gate.py            # Release validation
+│   └── release_gate_personal.py   # Personal release checks
+├── configs/                       # Configuration files
+│   └── server_config.yaml         # Server configuration
+├── examples/                      # Usage examples
+│   └── client_example.py          # API client example
+├── archive/                       # Historical files
+│   ├── old_docs/                  # Legacy documentation
+│   ├── old_scripts/               # Legacy scripts
+│   ├── old_versions/              # Previous server versions
+│   └── v4.5.x/, v4.6.0/          # Version-specific archives
+├── logs/                          # Server logs and archives
+├── docs/                          # Additional documentation
+├── requirements.txt               # Python dependencies with observability
+├── run_tests.sh                   # Unified test runner
+├── ARCHITECTURE.md                # v4.8.0 enterprise architecture
+├── DEPLOYMENT_GUIDE.md            # Production deployment guide
+├── RELEASE_NOTES.md               # v4.8.0 release documentation
+├── GPU_ROUTING.md                 # GPU routing with observability
+├── CHANGELOG.md                   # Complete version history
+├── CLAUDE.md                      # Claude Code development guidance
+└── README.md                      # This comprehensive documentation
 ```
 
 ## 🔧 Advanced Configuration
